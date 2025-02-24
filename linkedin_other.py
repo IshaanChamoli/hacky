@@ -42,8 +42,10 @@ def extract_profile_urls(driver, page_number):
             link = container.find_element(By.CSS_SELECTOR, 'a[href*="linkedin.com/in/"]')
             url = link.get_attribute('href')
             if url:
-                profile_urls.add(url)
-                print(f"   ✅ [{i}/{len(containers)}] Found: {url}")
+                # Clean the URL by removing everything after the question mark
+                clean_url = url.split('?')[0]
+                profile_urls.add(clean_url)
+                print(f"   ✅ [{i}/{len(containers)}] Found: {clean_url}")
         except Exception as e:
             print(f"   ⚠️ [{i}/{len(containers)}] Failed to extract URL: {str(e)}")
             continue
@@ -69,23 +71,26 @@ def main():
         return
     
     # Setup Chrome options
-    print("\n🌐 Setting up Chrome browser...")
+    print("\n🌐 Setting up Chrome browser in headless mode...")
     options = webdriver.ChromeOptions()
+    options.add_argument('--headless=new')  # New headless mode
     options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--window-size=1920,1080')  # Set a good default window size
     options.add_argument('--start-maximized')
+    options.add_argument('--disable-gpu')  # Recommended for headless
+    options.add_argument('--no-sandbox')  # Required for some systems
     
     # Use existing Chrome profile
     profile_dir = os.path.expanduser('~/Library/Application Support/Google/Chrome/Default')
     options.add_argument(f'user-data-dir={profile_dir}')
     
     try:
-        print("   Starting Chrome...")
+        print("   Starting Chrome in headless mode...")
         driver = webdriver.Chrome(options=options)
         driver.get(url)
         
-        print("\n⚡ Navigate to the connections page, then type 'scrape!' and press Enter to start scraping...")
-        while input().lower().strip() != "scrape!":
-            print("Type 'scrape!' to begin...")
+        # Since we're headless, no need to wait for manual navigation
+        print("\n⚡ Starting scraping immediately...")
         
         urls_by_page = {}
         page_number = 1
