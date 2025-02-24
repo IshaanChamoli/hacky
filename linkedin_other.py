@@ -26,28 +26,45 @@ def save_urls(urls_by_page, filename='connections.json'):
 def extract_profile_urls(driver, page_number):
     print(f"\n🔍 Scanning page {page_number} for profile URLs...")
     
-    # Wait a bit for JavaScript content to load
-    time.sleep(2)
+    # Wait for the first profile container to be present
+    try:
+        # First wait for the search results container
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.search-results-container'))
+        )
+        
+        # Then wait for profile containers
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'div[data-chameleon-result-urn]'))
+        )
+        
+        # Additional wait to ensure all containers are loaded
+        time.sleep(2)  # Short sleep to let any remaining profiles load
+        
+    except TimeoutException:
+        print("   No profile containers found")
+        return set()
     
-    # First find all search result containers
-    print("   Looking for profile containers...")
+    # Get all containers at once
     containers = driver.find_elements(By.CSS_SELECTOR, 'div[data-chameleon-result-urn]')
+    expected_count = 10  # LinkedIn typically shows 10 results per page
+    
+    # If we don't see enough results, wait a bit more
+    if len(containers) < expected_count:
+        print(f"   Found only {len(containers)} containers, waiting for more...")
+        time.sleep(2)
+        containers = driver.find_elements(By.CSS_SELECTOR, 'div[data-chameleon-result-urn]')
+    
     print(f"   Found {len(containers)} potential profile containers")
     
-    # Extract LinkedIn profile URLs
     profile_urls = set()
     for i, container in enumerate(containers, 1):
         try:
-            # Find the link within this container
             link = container.find_element(By.CSS_SELECTOR, 'a[href*="linkedin.com/in/"]')
-            url = link.get_attribute('href')
-            if url:
-                # Clean the URL by removing everything after the question mark
-                clean_url = url.split('?')[0]
-                profile_urls.add(clean_url)
-                print(f"   ✅ [{i}/{len(containers)}] Found: {clean_url}")
-        except Exception as e:
-            print(f"   ⚠️ [{i}/{len(containers)}] Failed to extract URL: {str(e)}")
+            url = link.get_attribute('href').split('?')[0]  # Clean URL immediately
+            profile_urls.add(url)
+            print(f"   ✅ [{i}/{len(containers)}] Found: {url}")
+        except:
             continue
     
     print(f"\n📊 Successfully extracted {len(profile_urls)} unique URLs from page {page_number}")
@@ -99,6 +116,13 @@ def main():
             while True:
                 print(f"\n📄 Processing page {page_number}...")
                 
+                # Navigate to next page
+                if page_number > 1:
+                    next_url = get_next_page_url(driver.current_url, page_number)
+                    print(f"\n⏭️ Moving to page {page_number}...")
+                    print(f"   URL: {next_url}")
+                    driver.get(next_url)
+                
                 # Extract URLs from current page
                 new_urls = extract_profile_urls(driver, page_number)
                 
@@ -109,15 +133,7 @@ def main():
                 
                 urls_by_page[f"page_{page_number}"] = list(new_urls)
                 save_urls(urls_by_page)
-                
-                # Generate and navigate to next page URL
                 page_number += 1
-                next_url = get_next_page_url(driver.current_url, page_number)  # Use current_url instead of initial url
-                print(f"\n⏭️ Moving to page {page_number}...")
-                print(f"   URL: {next_url}")
-                
-                driver.get(next_url)
-                time.sleep(3)  # Wait for page load
                 
         except Exception as e:
             print(f"\n❌ Scraping interrupted: {e}")
