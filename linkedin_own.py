@@ -3,67 +3,62 @@ import os
 import time
 import json
 
-def scrape_visible_connections(page, existing_connections=None):
-    if existing_connections is None:
-        existing_connections = set()
+def scrape_visible_connections(page, existing_urls=None):
+    if existing_urls is None:
+        existing_urls = set()
     
-    new_connections = []
+    new_urls = []
     
-    # Get all connection cards
-    connections = page.query_selector_all('div.mn-connection-card__details')
+    # Get all connection cards that contain links
+    connections = page.query_selector_all('a.mn-connection-card__link')
     
     for connection in connections:
-        # Get name and occupation
-        name_elem = connection.query_selector('.mn-connection-card__name')
-        occupation_elem = connection.query_selector('.mn-connection-card__occupation')
-        
-        if name_elem and occupation_elem:
-            name = name_elem.inner_text().strip()
-            occupation = occupation_elem.inner_text().strip()
+        # Get the URL
+        url = connection.get_attribute('href')
+        if url:
+            full_url = f"https://www.linkedin.com{url}"
             
-            # Only process if this is a new connection
-            if name not in existing_connections:
-                existing_connections.add(name)
-                new_connections.append({
-                    "name": name,
-                    "occupation": occupation
-                })
-                print(f"{name} - {occupation}")
+            # Only process if this is a new URL
+            if full_url not in existing_urls:
+                existing_urls.add(full_url)
+                new_urls.append(full_url)
+                print(f"Found URL: {full_url}")
     
-    return new_connections
+    return new_urls
 
-def save_connections(connections, filename=None):
-    """Helper function to save connections to a JSON file"""
+def save_urls(urls, filename=None):
+    """Helper function to save URLs to a text file"""
     if filename is None:
-        filename = input("\nEnter filename to save connections (e.g. 'connections.json'): ")
-        if not filename.endswith('.json'):
-            filename += '.json'
+        filename = input("\nEnter filename to save URLs (e.g. 'linkedin_urls.txt'): ")
+        if not filename.endswith('.txt'):
+            filename += '.txt'
     
     with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(connections, f, indent=2, ensure_ascii=False)
-    print(f"\nSaved {len(connections)} connections to {filename}")
+        for url in urls:
+            f.write(f"{url}\n")
+    print(f"\nSaved {len(urls)} URLs to {filename}")
 
 def scroll_and_scrape(page):
     print("\nStarting to scroll and scrape...")
     last_height = 0
     same_height_count = 0
-    all_connections = []
-    existing_names = set()
+    all_urls = []
+    existing_urls = set()
     
     # Ask for filename at the start
-    filename = input("\nEnter filename to save connections (e.g. 'connections.json'): ")
-    if not filename.endswith('.json'):
-        filename += '.json'
+    filename = input("\nEnter filename to save URLs (e.g. 'linkedin_urls.txt'): ")
+    if not filename.endswith('.txt'):
+        filename += '.txt'
     
     try:
         while True:
-            # Scrape visible connections
-            new_connections = scrape_visible_connections(page, existing_names)
-            if new_connections:
-                all_connections.extend(new_connections)
-                print(f"\nFound {len(new_connections)} new connections. Total: {len(all_connections)}")
-                # Save progress after each batch of new connections
-                save_connections(all_connections, filename)
+            # Scrape visible URLs
+            new_urls = scrape_visible_connections(page, existing_urls)
+            if new_urls:
+                all_urls.extend(new_urls)
+                print(f"\nFound {len(new_urls)} new URLs. Total: {len(all_urls)}")
+                # Save progress after each batch of new URLs
+                save_urls(all_urls, filename)
             
             # Scroll to bottom
             current_height = page.evaluate('''() => {
@@ -98,10 +93,10 @@ def scroll_and_scrape(page):
         print(f"\nScraping interrupted: {e}")
     finally:
         # Always save whatever we've collected so far
-        if all_connections:
-            save_connections(all_connections, filename)
+        if all_urls:
+            save_urls(all_urls, filename)
     
-    return all_connections
+    return all_urls
 
 def main():
     # Ask for URL in terminal
@@ -154,10 +149,10 @@ def main():
                 print("Type 'scrape!' to begin scrolling...")
             
             # Start scrolling and scraping
-            connections = scroll_and_scrape(page)
+            urls = scroll_and_scrape(page)
             
             # Wait for user input to close
-            input(f"\nScraping complete! Found {len(connections)} connections. Press Enter to close the browser...")
+            input(f"\nScraping complete! Found {len(urls)} URLs. Press Enter to close the browser...")
             
         except Exception as e:
             print(f"Error: {e}")
