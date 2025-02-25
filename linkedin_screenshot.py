@@ -12,9 +12,14 @@ import os
 import base64
 import json
 from datetime import datetime
+from multiprocessing import Pool, Lock
+from functools import partial
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Create a lock for file writing
+json_lock = Lock()
 
 def get_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -93,11 +98,141 @@ def analyze_profile_with_gpt4v(image_paths, profile_url):
         print(f"\n❌ Error calling OpenAI API: {str(e)}")
         return None
 
+def process_single_profile(url, output_file):
+    try:
+        log_message(f"Starting processing for: {url}")
+        
+        # Create a unique profile directory for this process
+        process_id = os.getpid()
+        base_profile_dir = os.path.expanduser('~/Library/Application Support/Google/Chrome/Default')
+        new_profile_dir = os.path.expanduser(f'~/Library/Application Support/Google/Chrome/Profile_{process_id}')
+        
+        # Copy the default profile to a new directory if it doesn't exist
+        if not os.path.exists(new_profile_dir):
+            try:
+                import shutil
+                shutil.copytree(base_profile_dir, new_profile_dir)
+                log_message(f"Created new Chrome profile for process {process_id}")
+            except Exception as e:
+                log_message(f"Warning: Could not copy Chrome profile: {str(e)}", True)
+        
+        # Setup Chrome with optimized options
+        options = Options()
+        options.add_argument('--headless=new')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--start-maximized')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-default-apps')
+        options.add_argument('--disable-notifications')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-web-security')
+        options.add_argument('--dns-prefetch-disable')
+        options.add_argument('--disable-javascript')
+        options.page_load_strategy = 'eager'
+        
+        # Use the unique profile directory
+        options.add_argument(f'user-data-dir={new_profile_dir}')
+        
+        # Add a unique debugging port
+        options.add_argument(f'--remote-debugging-port={9222 + process_id % 1000}')
+        
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(10)
+        
+        profile_name = url.strip('/').split('/')[-1]
+        screenshots_dir = f"{profile_name}_screenshots"
+        os.makedirs(screenshots_dir, exist_ok=True)
+        
+        try:
+            driver.get(url)
+        except Exception as e:
+            log_message(f"Error loading page, retrying once: {str(e)}", True)
+            driver.refresh()
+        
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+        except:
+            log_message("Warning: Page load timeout, proceeding anyway")
+        
+        time.sleep(1)
+        
+        # Take screenshots
+        viewport_height = driver.execute_script("return window.innerHeight")
+        total_height = driver.execute_script("return document.body.scrollHeight")
+        
+        screenshot_paths = []
+        current_position = 0
+        screenshot_number = 1
+        
+        while current_position < total_height:
+            driver.execute_script(f"window.scrollTo(0, {current_position});")
+            time.sleep(0.5)
+            
+            screenshot_path = os.path.join(screenshots_dir, f"screenshot_{screenshot_number}.png")
+            driver.save_screenshot(screenshot_path)
+            screenshot_paths.append(screenshot_path)
+            
+            log_message(f"Captured screenshot {screenshot_number} for {profile_name}")
+            
+            current_position += viewport_height
+            screenshot_number += 1
+        
+        # Analyze with GPT-4V
+        log_message(f"Analyzing profile with GPT-4 Vision: {profile_name}")
+        profile_data = analyze_profile_with_gpt4v(screenshot_paths, url)
+        
+        if profile_data:
+            # Update the JSON file with lock to prevent concurrent writes
+            with json_lock:
+                try:
+                    # Read existing data
+                    existing_data = []
+                    if os.path.exists(output_file):
+                        with open(output_file, 'r', encoding='utf-8') as f:
+                            existing_data = json.load(f)
+                    
+                    # Add new profile
+                    existing_data.append(profile_data)
+                    
+                    # Write back to file
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        json.dump(existing_data, f, indent=2, ensure_ascii=False)
+                    log_message(f"Updated {output_file} with profile: {profile_name}")
+                except Exception as e:
+                    log_message(f"Error updating JSON file: {str(e)}", True)
+        
+        # Clean up screenshots
+        try:
+            import shutil
+            shutil.rmtree(screenshots_dir)
+            log_message(f"Cleaned up directory: {screenshots_dir}")
+        except Exception as e:
+            log_message(f"Warning: Could not delete screenshots directory: {str(e)}", True)
+        
+    except Exception as e:
+        log_message(f"Error processing profile {url}: {str(e)}", True)
+    finally:
+        if 'driver' in locals():
+            driver.quit()
+            log_message(f"Browser closed for {profile_name}")
+            
+            # Clean up the temporary profile directory
+            try:
+                import shutil
+                shutil.rmtree(new_profile_dir)
+                log_message(f"Cleaned up Chrome profile directory: {new_profile_dir}")
+            except Exception as e:
+                log_message(f"Warning: Could not delete Chrome profile: {str(e)}", True)
+
 def process_profiles():
-    # Initialize the results list
-    all_profiles = []
-    
-    # Use fixed filename instead of timestamp
     output_file = "ishaan.json"
     
     try:
@@ -108,128 +243,22 @@ def process_profiles():
         total_urls = len(urls)
         log_message(f"Found {total_urls} profiles to process")
         
-        # Setup Chrome with optimized options
-        log_message("Setting up Chrome browser...")
-        options = Options()
-        options.add_argument('--headless=new')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--start-maximized')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        
-        # Performance optimizations
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-default-apps')
-        options.add_argument('--disable-notifications')
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--disable-web-security')
-        options.add_argument('--dns-prefetch-disable')
-        options.add_argument('--disable-javascript')  # Since we only need static content
-        options.page_load_strategy = 'eager'  # Don't wait for all resources
-        
-        profile_dir = os.path.expanduser('~/Library/Application Support/Google/Chrome/Default')
-        options.add_argument(f'user-data-dir={profile_dir}')
-        
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        
-        # Set shorter timeouts
-        driver.set_page_load_timeout(30)
-        driver.implicitly_wait(10)
-        
-        # Process each URL
-        for index, url in enumerate(urls, 1):
-            log_message(f"Processing profile {index}/{total_urls}: {url}")
+        # Process URLs in parallel with 5 workers
+        with Pool(5) as pool:
+            # Use partial to pass output_file to process_single_profile
+            process_func = partial(process_single_profile, output_file=output_file)
             
-            try:
-                profile_name = url.strip('/').split('/')[-1]
-                screenshots_dir = f"{profile_name}_screenshots"
-                os.makedirs(screenshots_dir, exist_ok=True)
-                
-                # Load the profile with error handling
-                log_message(f"Loading profile: {url}")
-                try:
-                    driver.get(url)
-                except Exception as e:
-                    log_message(f"Error loading page, retrying once: {str(e)}", True)
-                    driver.refresh()
-                
-                # Wait for minimum content to load
-                try:
-                    WebDriverWait(driver, 10).until(  # Reduced timeout
-                        EC.presence_of_element_located((By.TAG_NAME, "body"))
-                    )
-                except:
-                    log_message("Warning: Page load timeout, proceeding anyway")
-                
-                # Shorter wait
-                time.sleep(1)
-                
-                # Take screenshots
-                viewport_height = driver.execute_script("return window.innerHeight")
-                total_height = driver.execute_script("return document.body.scrollHeight")
-                
-                screenshot_paths = []
-                current_position = 0
-                screenshot_number = 1
-                
-                while current_position < total_height:
-                    driver.execute_script(f"window.scrollTo(0, {current_position});")
-                    time.sleep(0.5)
-                    
-                    screenshot_path = os.path.join(screenshots_dir, f"screenshot_{screenshot_number}.png")
-                    driver.save_screenshot(screenshot_path)
-                    screenshot_paths.append(screenshot_path)
-                    
-                    log_message(f"Captured screenshot {screenshot_number}")
-                    
-                    current_position += viewport_height
-                    screenshot_number += 1
-                
-                # Analyze with GPT-4V
-                log_message("Analyzing profile with GPT-4 Vision...")
-                profile_data = analyze_profile_with_gpt4v(screenshot_paths, url)
-                
-                if profile_data:
-                    # Add to results list
-                    all_profiles.append(profile_data)
-                    
-                    # Update the JSON file after each successful profile
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        json.dump(all_profiles, f, indent=2, ensure_ascii=False)
-                    log_message(f"Updated {output_file} with profile data")
-                
-                # Clean up screenshots
-                try:
-                    import shutil
-                    shutil.rmtree(screenshots_dir)
-                    log_message(f"Cleaned up directory: {screenshots_dir}")
-                except Exception as e:
-                    log_message(f"Warning: Could not delete screenshots directory: {str(e)}", True)
-                
-            except Exception as e:
-                log_message(f"Error processing profile {url}: {str(e)}", True)
-                continue
-            
-            # Add a delay between profiles
-            if index < total_urls:
-                log_message("Waiting 5 seconds before next profile...")
-                time.sleep(5)
+            # Map URLs to workers
+            pool.map(process_func, urls)
         
-        log_message(f"✅ Processing complete! Processed {len(all_profiles)}/{total_urls} profiles")
+        log_message(f"✅ Processing complete!")
         log_message(f"Results saved to: {output_file}")
         
     except Exception as e:
         log_message(f"Fatal error: {str(e)}", True)
-    finally:
-        if 'driver' in locals():
-            driver.quit()
-            log_message("Browser closed")
 
 def main():
-    log_message("Starting LinkedIn Profile Processor")
+    log_message("Starting LinkedIn Profile Processor (Parallel Version)")
     process_profiles()
 
 if __name__ == "__main__":
