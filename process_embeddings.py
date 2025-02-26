@@ -3,12 +3,27 @@ import os
 from time import sleep
 from dotenv import load_dotenv
 from openai import OpenAI
+from pinecone import Pinecone
 
 # Load environment variables
 load_dotenv()
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+# Initialize Pinecone
+pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
+index_name = "hacky"
+
+def init_pinecone():
+    """Connect to existing Pinecone index"""
+    try:
+        index = pc.Index(index_name)
+        print(f"\n📌 Connected to Pinecone index: {index_name}")
+        return index
+    except Exception as e:
+        print(f"❌ Error connecting to Pinecone: {str(e)}")
+        return None
 
 def get_embedding(text):
     """Get embedding for a text using OpenAI's API"""
@@ -18,42 +33,80 @@ def get_embedding(text):
             input=text,
             encoding_format="float"
         )
-        # Print just first 5 values of embedding
         embedding = response.data[0].embedding
-        print("\n📊 First 5 values of embedding:")
-        print(embedding[:5])
+        print("\n📊 Embedding generated successfully")
         return embedding
     except Exception as e:
         print(f"⚠️ Error getting embedding: {str(e)}")
         return None
 
-def process_profile(profile):
-    """Process a single profile and get its embedding"""
-    # Combine important points and details
-    important_text = " ".join(profile.get('important', []))
-    all_details = profile.get('all_details', '')
-    combined_text = f"{important_text} {all_details}".strip()
+def process_profiles_batch(profiles, index, batch_size=100):
+    """Process profiles in batches and upload embeddings to Pinecone"""
+    successful_uploads = 0
+    vectors_batch = []
     
-    # Print the combined text
-    print("\n📝 Combined text being sent to OpenAI:")
-    print(combined_text)
-    print("\n" + "-"*80)
+    for i, profile in enumerate(profiles, 1):
+        print(f"\n[{i}/{len(profiles)}] 🔍 Processing: {profile['name']}")
+        
+        # Combine important points and details
+        important_text = " ".join(profile.get('important', []))
+        all_details = profile.get('all_details', '')
+        combined_text = f"{important_text} {all_details}".strip()
+        
+        # Get embedding
+        embedding = get_embedding(combined_text)
+        
+        if embedding:
+            # Create vector object
+            vector = {
+                'id': profile['url'].split('/')[-2],  # Use LinkedIn handle as ID
+                'values': embedding,
+                'metadata': {
+                    'url': profile['url'],
+                    'name': profile['name'],
+                    'text': combined_text
+                }
+            }
+            vectors_batch.append(vector)
+            successful_uploads += 1
+            
+            # Upload batch when it reaches batch_size
+            if len(vectors_batch) >= batch_size:
+                try:
+                    index.upsert(vectors=vectors_batch)
+                    print(f"✅ Successfully uploaded batch of {len(vectors_batch)} vectors to Pinecone")
+                    vectors_batch = []  # Clear batch after upload
+                except Exception as e:
+                    print(f"❌ Error uploading batch to Pinecone: {str(e)}")
+                    successful_uploads -= len(vectors_batch)
+                    vectors_batch = []
+        
+        # Add a small delay to avoid rate limits
+        sleep(0.5)
     
-    # Get embedding
-    embedding = get_embedding(combined_text)
+    # Upload any remaining vectors
+    if vectors_batch:
+        try:
+            index.upsert(vectors=vectors_batch)
+            print(f"✅ Successfully uploaded final batch of {len(vectors_batch)} vectors to Pinecone")
+        except Exception as e:
+            print(f"❌ Error uploading final batch to Pinecone: {str(e)}")
+            successful_uploads -= len(vectors_batch)
     
-    return {
-        'url': profile['url'],
-        'name': profile['name'],
-        'embedding': embedding
-    }
+    return successful_uploads
 
 def main():
     print("\n🔄 Starting profile embedding process...")
     
+    # Initialize Pinecone
+    index = init_pinecone()
+    if not index:
+        print("❌ Failed to initialize Pinecone. Exiting...")
+        return
+    
     # Load JSON data
     try:
-        with open('ishaan.json', 'r', encoding='utf-8') as f:
+        with open('sangeet.json', 'r', encoding='utf-8') as f:
             profiles = json.load(f)
     except Exception as e:
         print(f"❌ Error loading JSON: {str(e)}")
@@ -61,34 +114,10 @@ def main():
 
     print(f"📚 Loaded {len(profiles)} profiles")
     
-    # Process each profile
-    embeddings = []
-    for i, profile in enumerate(profiles, 1):
-        print(f"\n[{i}/{len(profiles)}] 🔍 Processing: {profile['name']}")
-        
-        result = process_profile(profile)
-        if result['embedding']:
-            embeddings.append(result)
-            print(f"✅ Successfully created embedding for {profile['name']}")
-        else:
-            print(f"❌ Failed to create embedding for {profile['name']}")
-            
-        # Add a small delay to avoid rate limits
-        sleep(0.5)
-        
-        # Optional: Process only first few profiles for testing
-        if i == 3:  # Change this number to process more/fewer profiles
-            break
+    # Process profiles in batches
+    successful_uploads = process_profiles_batch(profiles, index)
     
-    print(f"\n✨ Complete! Processed {len(embeddings)} embeddings successfully")
-    
-    # Optionally save embeddings to file
-    try:
-        with open('profile_embeddings.json', 'w', encoding='utf-8') as f:
-            json.dump(embeddings, f, ensure_ascii=False, indent=2)
-        print("💾 Saved embeddings to profile_embeddings.json")
-    except Exception as e:
-        print(f"⚠️ Error saving embeddings: {str(e)}")
+    print(f"\n✨ Complete! Successfully uploaded {successful_uploads} embeddings to Pinecone")
 
 if __name__ == "__main__":
     main() 
