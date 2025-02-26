@@ -40,10 +40,13 @@ def get_embedding(text):
         print(f"⚠️ Error getting embedding: {str(e)}")
         return None
 
-def process_profiles_batch(profiles, index, batch_size=100):
+def process_profiles_batch(profiles, index, batch_size=100, filename='sangeet_ranjan.json'):
     """Process profiles in batches and upload embeddings to Pinecone"""
     successful_uploads = 0
     vectors_batch = []
+    
+    # Extract point person from filename (removing .json extension)
+    point_person = filename.replace('.json', '').replace('_', ' ').title()
     
     for i, profile in enumerate(profiles, 1):
         print(f"\n[{i}/{len(profiles)}] 🔍 Processing: {profile['name']}")
@@ -57,14 +60,14 @@ def process_profiles_batch(profiles, index, batch_size=100):
         embedding = get_embedding(combined_text)
         
         if embedding:
-            # Create vector object
+            # Create vector object with all profile data as metadata
             vector = {
                 'id': profile['url'].split('/')[-2],  # Use LinkedIn handle as ID
                 'values': embedding,
                 'metadata': {
-                    'url': profile['url'],
-                    'name': profile['name'],
-                    'text': combined_text
+                    **profile,  # Include all fields from the profile
+                    'combined_text': combined_text,  # Add the combined text used for embedding
+                    'point_person': point_person  # Add point person from filename
                 }
             }
             vectors_batch.append(vector)
@@ -96,6 +99,7 @@ def process_profiles_batch(profiles, index, batch_size=100):
     return successful_uploads
 
 def main():
+    filename = 'ishaan_chamoli.json'
     print("\n🔄 Starting profile embedding process...")
     
     # Initialize Pinecone
@@ -106,7 +110,7 @@ def main():
     
     # Load JSON data
     try:
-        with open('sangeet.json', 'r', encoding='utf-8') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             profiles = json.load(f)
     except Exception as e:
         print(f"❌ Error loading JSON: {str(e)}")
@@ -115,7 +119,7 @@ def main():
     print(f"📚 Loaded {len(profiles)} profiles")
     
     # Process profiles in batches
-    successful_uploads = process_profiles_batch(profiles, index)
+    successful_uploads = process_profiles_batch(profiles, index, filename=filename)
     
     print(f"\n✨ Complete! Successfully uploaded {successful_uploads} embeddings to Pinecone")
 
